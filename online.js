@@ -199,7 +199,7 @@ function renderScoreboard() {
   return `<aside class="scoreboard"><div class="scoreboard-head"><h2>Punkty</h2><span>cel: 30</span></div><div class="score-list">${sorted.map((player) => {
     const index = game.players.findIndex((item) => item.id === player.id);
     return `<div class="score-row">${playerDot(player, index)}<div class="score-name">${escapeHtml(player.name)}${game.storytellerId === player.id ? '<span class="storyteller-label">opowiada</span>' : ''}<div class="score-track"><span style="width:${Math.min(player.score / 30 * 100, 100)}%"></span></div></div><span class="score-number">${player.score}</span></div>`;
-  }).join('')}</div><p class="rules-note">Trafne głosy i głosy na Twoją kartę dają punkty. Pierwsza osoba z 30 punktami wygrywa.</p></aside>`;
+  }).join('')}</div><p class="rules-note">Narrator i trafiający zdobywają po 3 pkt, gdy część graczy zgadnie. Gdy zgadną wszyscy albo nikt: pozostali dostają po 2 pkt. Każdy głos na Twoją kartę to +1 pkt. Przy 3 graczach pozostali zagrywają po 2 karty.</p></aside>`;
 }
 
 function renderGameShell(content, stage, title) {
