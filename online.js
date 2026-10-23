@@ -181,7 +181,7 @@ function renderScoreboard() {
 
 function renderGameShell(content, stage, title) {
   const storyteller = getPlayer(network.game.storytellerId);
-  return `<div class="game-layout"><section class="game-content"><div class="game-heading"><div><span class="eyebrow">Runda ${network.game.round} · ${stage}</span><h1>${title}</h1></div><div class="round-pill"><span>Opowiada</span><strong>${escapeHtml(storyteller.name)}</strong></div></div>${content}</section>${renderScoreboard()}</div>`;
+  return `<div class="game-layout"><section class="game-content"><div class="game-heading"><div><span class="eyebrow">Runda ${network.game.round} · ${stage}</span><h1>${title}</h1></div><div class="round-pill"><span>Opowiada</span><strong>${escapeHtml(storyteller.name)}</strong></div></div>${renderMessage()}${content}</section>${renderScoreboard()}</div>`;
 }
 
 function renderWaitingMessage(playerId, message) {
