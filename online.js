@@ -171,13 +171,24 @@ function renderJoin() {
     </div>`;
 }
 
+function isPlayerConnected(player) {
+  if (!network.isHost) return player.connected;
+  if (player.id === network.game?.hostId) return true;
+  const connection = network.connections.get(player.id);
+  const lastSeen = network.lastSeen.get(player.id) || 0;
+  return Boolean(connection?.open && Date.now() - lastSeen <= 11000);
+}
+
 function renderPlayerList() {
-  return network.game.players.map((player, index) => `<div class="room-player-row ${player.connected ? '' : 'is-offline'}">${playerDot(player, index)}<div class="room-player-name">${escapeHtml(player.name)}${player.id === network.game.hostId ? '<span class="host-label">gospodarz</span>' : ''}</div><span class="connection-label">${player.connected ? 'online' : 'rozłączony'}</span></div>`).join('');
+  return network.game.players.map((player, index) => {
+    const connected = isPlayerConnected(player);
+    return `<div class="room-player-row ${connected ? '' : 'is-offline'}">${playerDot(player, index)}<div class="room-player-name">${escapeHtml(player.name)}${player.id === network.game.hostId ? '<span class="host-label">gospodarz</span>' : ''}</div><span class="connection-label">${connected ? 'online' : 'rozłączony'}</span></div>`;
+  }).join('');
 }
 
 function renderLobby() {
   const playerCount = network.game.players.length;
-  const connectedCount = network.game.players.filter((player) => network.isHost ? (player.id === network.game.hostId || Boolean(network.connections.get(player.id)?.open)) : player.connected).length;
+  const connectedCount = network.game.players.filter(isPlayerConnected).length;
   const isHost = network.isHost;
   app.innerHTML = `
     <div class="join-layout"><section class="setup-card lobby-card">
@@ -569,7 +580,7 @@ function startGame() {
     render();
     return;
   }
-  const active = network.game.players.filter((player) => player.id === network.game.hostId || Boolean(network.connections.get(player.id)?.open));
+  const active = network.game.players.filter(isPlayerConnected);
   if (active.length < 3 || active.length > 6) {
     network.error = `Do startu potrzeba 3 połączonych graczy. Teraz jest ${active.length}.`;
     render();
