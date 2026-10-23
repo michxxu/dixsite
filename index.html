@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f5f0e7" />
+    <meta name="description" content="Internetowa gra skojarzeń dla przyjaciół. Utwórz pokój, wyślij link i zagrajcie razem." />
+    <title>Opowieści obrazów — gra online</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js" defer></script>
+    <script src="./online.js" defer></script>
+  </head>
+  <body>
+    <div class="ambient ambient-one"></div>
+    <div class="ambient ambient-two"></div>
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="Opowieści obrazów — strona główna">
+        <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+        <span class="brand-copy"><strong>opowieści</strong><small>OBRAZÓW</small></span>
+      </a>
+      <div class="topbar-note"><span class="status-dot"></span> Grajcie razem przez internet</div>
+    </header>
+    <main id="app" class="app-shell" aria-live="polite"></main>
+    <footer class="site-footer"><span>Stworzone, by pobudzać wyobraźnię.</span><span>✦</span><span>3–6 graczy · około 30 minut</span></footer>
+  </body>
+</html>
