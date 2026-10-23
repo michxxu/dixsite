@@ -26,7 +26,11 @@ const network = {
   game: null,
   hand: [],
   deck: [],
+  discardPile: [],
   cardSerial: 0,
+  heartbeatTimer: null,
+  lastSeen: new Map(),
+  lastHostPingAt: 0,
   connections: new Map(),
   peerToPlayer: new Map(),
   connection: null,
@@ -89,8 +93,27 @@ function shuffle(items) {
 }
 
 function drawCard() {
-  if (!network.deck.length) network.deck = createDeck();
+  if (!network.deck.length) {
+    if (network.discardPile.length) {
+      network.deck = shuffle(network.discardPile);
+      network.discardPile = [];
+    } else {
+      network.deck = createDeck();
+    }
+  }
   return network.deck.pop();
+}
+
+function cardsPerNonStoryteller(game = network.game) {
+  return game?.players?.length === 3 ? 2 : 1;
+}
+
+function expectedSubmissionCount(game = network.game) {
+  return 1 + Math.max(0, game.activePlayerIds.length - 1) * cardsPerNonStoryteller(game);
+}
+
+function countPlayerSubmissions(playerId, game = network.game) {
+  return game.submissions.filter((submission) => submission.ownerId === playerId).length;
 }
 
 function publicGameSnapshot() {
@@ -154,7 +177,7 @@ function renderPlayerList() {
 
 function renderLobby() {
   const playerCount = network.game.players.length;
-  const connectedCount = network.game.players.filter((player) => player.connected).length;
+  const connectedCount = network.game.players.filter((player) => network.isHost ? (player.id === network.game.hostId || Boolean(network.connections.get(player.id)?.open)) : player.connected).length;
   const isHost = network.isHost;
   app.innerHTML = `
     <div class="join-layout"><section class="setup-card lobby-card">
@@ -200,9 +223,18 @@ function renderCluePhase() {
 }
 
 function renderSubmitPhase() {
-  const current = network.game.turnPlayerId;
+  const game = network.game;
+  const current = game.turnPlayerId;
   const isMyTurn = current === network.playerId;
-  const content = `<section class="stage-card"><div class="stage-topline"><span class="eyebrow">Etap 2 z 3</span><span class="step-count">${network.game.submissions.length} / ${network.game.activePlayerIds.length} kart</span></div><h2>Znajdź obraz pasujący do wskazówki</h2><p class="stage-description">Każdy gracz dokłada kartę ze swojej ręki. Pozostali nie zobaczą, kto ją wybrał.</p><div class="clue-banner"><small>Skojarzenie</small>${escapeHtml(network.game.clue)}</div>${isMyTurn ? `${renderHand()}<button class="primary-button stage-action" data-action="submit-card" ${!network.selectedCardId ? 'disabled' : ''}>Zagraj tę kartę <span aria-hidden="true">→</span></button>` : renderWaitingMessage(current, 'Wybiera swoją kartę. Gdy ją zagra, przejdzie kolej na następną osobę.')}</section>`;
+  const expected = expectedSubmissionCount(game);
+  const cardsNeeded = cardsPerNonStoryteller(game);
+  const alreadyPlayed = countPlayerSubmissions(current, game);
+  const leftForCurrent = Math.max(0, cardsNeeded - alreadyPlayed);
+  const threePlayerRule = cardsNeeded === 2 ? ' W grze trzyosobowej każdy poza narratorem zagrywa po dwie karty.' : '';
+  const waitingText = leftForCurrent > 1
+    ? `Zagra jeszcze ${leftForCurrent} karty.`
+    : 'Wybiera swoją kartę. Gdy ją zagra, przejdzie kolej na następną osobę.';
+  const content = `<section class="stage-card"><div class="stage-topline"><span class="eyebrow">Etap 2 z 3</span><span class="step-count">${game.submissions.length} / ${expected} kart</span></div><h2>Znajdź obraz pasujący do wskazówki</h2><p class="stage-description">Zagraj kartę ze swojej ręki. Pozostali nie zobaczą, kto ją wybrał.${threePlayerRule}</p><div class="clue-banner"><small>Skojarzenie</small>${escapeHtml(game.clue)}</div>${isMyTurn ? `${renderHand()}<button class="primary-button stage-action" data-action="submit-card" ${!network.selectedCardId ? 'disabled' : ''}>Zagraj kartę${cardsNeeded === 2 ? ` (pozostało ${leftForCurrent})` : ''} <span aria-hidden="true">→</span></button>` : renderWaitingMessage(current, waitingText)}</section>`;
   return renderGameShell(content, 'tajny wybór kart', 'Który obraz pasuje?');
 }
 
@@ -293,6 +325,9 @@ function createRoom(name) {
       network.roomId = id;
       network.playerId = id;
       network.game = createLobbyState(id, network.name);
+      network.discardPile = [];
+      network.hands = {};
+      startHeartbeat(true);
       const invite = new URL(window.location.href);
       invite.searchParams.set('room', id);
       network.inviteUrl = invite.toString();
@@ -340,7 +375,11 @@ function joinRoom(name) {
       network.playerId = token;
       const connection = peer.connect(network.roomId, { reliable: true });
       network.connection = connection;
-      connection.on('open', () => connection.send({ type: 'JOIN', token, name: network.name }));
+      connection.on('open', () => {
+        network.lastHostPingAt = Date.now();
+        startHeartbeat(false);
+        connection.send({ type: 'JOIN', token, name: network.name });
+      });
       connection.on('data', receiveGuestMessage);
       connection.on('error', () => {
         network.error = 'Połączenie z pokojem zostało przerwane. Spróbuj otworzyć zaproszenie ponownie.';
@@ -380,32 +419,87 @@ function peerErrorMessage(error) {
   return `Problem z połączeniem: ${error?.type || error?.message || 'spróbuj ponownie'}.`;
 }
 
+function startHeartbeat(isHost) {
+  window.clearInterval(network.heartbeatTimer);
+  network.heartbeatTimer = window.setInterval(() => {
+    if (isHost && network.isHost && network.game) {
+      const now = Date.now();
+      for (const [playerId, connection] of [...network.connections]) {
+        if (!connection.open) {
+          removeHostPlayer(playerId);
+          continue;
+        }
+        if (now - (network.lastSeen.get(playerId) || now) > 16000) {
+          removeHostPlayer(playerId);
+          try { connection.close(); } catch { /* already closed */ }
+          continue;
+        }
+        try { connection.send({ type: 'PING', at: now }); } catch { removeHostPlayer(playerId); }
+      }
+    } else if (!isHost && network.connection?.open && Date.now() - network.lastHostPingAt > 22000) {
+      window.clearInterval(network.heartbeatTimer);
+      network.error = 'Utracono połączenie z gospodarzem. Wróć do lobby i użyj aktualnego zaproszenia.';
+      network.note = '';
+      network.game = null;
+      try { network.connection.close(); } catch { /* already closed */ }
+      render();
+    }
+  }, 5000);
+}
+
+function removeHostPlayer(playerId) {
+  const game = network.game;
+  const connection = network.connections.get(playerId);
+  if (connection) network.peerToPlayer.delete(connection.peer);
+  network.connections.delete(playerId);
+  network.lastSeen.delete(playerId);
+  const player = game?.players.find((item) => item.id === playerId);
+  if (!player) return;
+  player.connected = false;
+  if (game.phase === 'lobby') {
+    game.players = game.players.filter((item) => item.id !== playerId);
+    network.note = `${player.name} opuścił lobby i został usunięty z listy.`;
+  } else {
+    game.players = game.players.filter((item) => item.id !== playerId);
+    game.players.forEach((item) => { item.score = 0; });
+    Object.assign(game, {
+      phase: 'lobby', round: 0, activePlayerIds: [], storytellerId: null, clue: '',
+      submissions: [], votes: [], voteOrder: [], turnPlayerId: null, result: null,
+    });
+    network.hands = {};
+    network.deck = [];
+    network.discardPile = [];
+    network.hand = [];
+    network.note = `${player.name} rozłączył się. Partia została zresetowana do lobby — możecie rozpocząć ponownie po jego powrocie.`;
+  }
+  broadcastState();
+}
+
 function registerHostConnection(connection) {
   connection.on('data', (message) => {
+    const playerId = network.peerToPlayer.get(connection.peer);
+    if (playerId) network.lastSeen.set(playerId, Date.now());
     if (message?.type === 'JOIN') handleJoin(connection, message);
-    else if (message?.type === 'ACTION') {
-      const playerId = network.peerToPlayer.get(connection.peer);
-      if (playerId) processHostAction(playerId, message.action, message.payload || {});
-    }
+    else if (message?.type === 'PONG') return;
+    else if (message?.type === 'ACTION' && playerId) processHostAction(playerId, message.action, message.payload || {});
   });
   connection.on('close', () => {
     const playerId = network.peerToPlayer.get(connection.peer);
     if (!playerId || network.connections.get(playerId) !== connection) return;
-    network.connections.delete(playerId);
-    const player = network.game?.players.find((item) => item.id === playerId);
-    if (player) {
-      player.connected = false;
-      broadcastState();
-    }
+    removeHostPlayer(playerId);
   });
 }
 
 function handleJoin(connection, message) {
-  if (!network.game) return;
+  if (!network.game || network.game.phase !== 'lobby') {
+    connection.send({ type: 'ERROR', message: 'Partia już się rozpoczęła albo gospodarz nie jest gotowy.' });
+    window.setTimeout(() => connection.close(), 500);
+    return;
+  }
   const token = String(message.token || connection.peer).slice(0, 80);
   let player = network.game.players.find((item) => item.id === token);
-  if (!player && (network.game.phase !== 'lobby' || network.game.players.length >= 6)) {
-    connection.send({ type: 'ERROR', message: network.game.phase !== 'lobby' ? 'Partia już się rozpoczęła.' : 'Pokój jest pełny.' });
+  if (!player && network.game.players.length >= 6) {
+    connection.send({ type: 'ERROR', message: 'Pokój jest pełny.' });
     window.setTimeout(() => connection.close(), 500);
     return;
   }
@@ -418,12 +512,19 @@ function handleJoin(connection, message) {
   }
   network.peerToPlayer.set(connection.peer, player.id);
   network.connections.set(player.id, connection);
+  network.lastSeen.set(player.id, Date.now());
   sendStateToPlayer(player.id);
   broadcastState();
 }
 
 function receiveGuestMessage(message) {
+  if (message?.type === 'PING') {
+    network.lastHostPingAt = Date.now();
+    if (network.connection?.open) network.connection.send({ type: 'PONG', at: Date.now() });
+    return;
+  }
   if (message?.type === 'STATE') {
+    network.lastHostPingAt = Date.now();
     network.game = message.game;
     network.hand = message.hand || [];
     network.playerId = message.me;
@@ -468,7 +569,7 @@ function startGame() {
     render();
     return;
   }
-  const active = network.game.players.filter((player) => player.connected);
+  const active = network.game.players.filter((player) => player.id === network.game.hostId || Boolean(network.connections.get(player.id)?.open));
   if (active.length < 3 || active.length > 6) {
     network.error = `Do startu potrzeba 3 połączonych graczy. Teraz jest ${active.length}.`;
     render();
@@ -476,9 +577,11 @@ function startGame() {
   }
   try {
     network.error = '';
+    network.discardPile = [];
     network.deck = createDeck();
     network.hands = {};
-    for (const player of active) network.hands[player.id] = Array.from({ length: 6 }, drawCard);
+    const startingHandSize = active.length === 3 ? 7 : 6;
+    for (const player of active) network.hands[player.id] = Array.from({ length: startingHandSize }, drawCard);
     const storyteller = active[Math.floor(Math.random() * active.length)];
     Object.assign(network.game, {
       phase: 'clue', round: 1, activePlayerIds: active.map((player) => player.id),
@@ -544,14 +647,15 @@ function processHostAction(playerId, action, payload) {
     return;
   }
   if (action === 'SUBMIT_CARD' && game.phase === 'submit' && playerId === game.turnPlayerId) {
-    if (game.submissions.some((submission) => submission.ownerId === playerId)) return;
     const hand = network.hands[playerId] || [];
+    const alreadyPlayed = countPlayerSubmissions(playerId, game);
+    if (alreadyPlayed >= cardsPerNonStoryteller(game)) return;
     const cardIndex = hand.findIndex((card) => card.id === payload.cardId);
     if (cardIndex < 0) return;
     const [card] = hand.splice(cardIndex, 1);
     game.submissions.push({ id: makeId(), ownerId: playerId, card });
     const ids = currentPlayerIds();
-    if (game.submissions.length === ids.length) {
+    if (game.submissions.length >= expectedSubmissionCount(game)) {
       game.submissions = shuffle(game.submissions);
       game.phase = 'vote';
       game.voteOrder = ids.filter((id) => id !== game.storytellerId);
@@ -560,8 +664,11 @@ function processHostAction(playerId, action, payload) {
       if (first && rotated[0] !== first) game.voteOrder = [...rotated.slice(rotated.indexOf(first)), ...rotated.slice(0, rotated.indexOf(first))];
       game.turnPlayerId = game.voteOrder[0] || null;
     } else {
-      const eligible = ids.filter((id) => id !== game.storytellerId && !game.submissions.some((submission) => submission.ownerId === id));
-      game.turnPlayerId = nextIdAfter(playerId, eligible);
+      const needsCard = (id) => id !== game.storytellerId && countPlayerSubmissions(id, game) < cardsPerNonStoryteller(game);
+      const eligible = ids.filter(needsCard);
+      game.turnPlayerId = countPlayerSubmissions(playerId, game) < cardsPerNonStoryteller(game)
+        ? playerId
+        : nextIdAfter(playerId, eligible);
     }
     broadcastState();
     return;
@@ -583,9 +690,11 @@ function processHostAction(playerId, action, payload) {
   if (action === 'RESTART' && playerId === game.hostId && game.phase === 'result' && game.players.some((player) => player.score >= 30)) {
     game.players.forEach((player) => { player.score = 0; });
     game.activePlayerIds = game.players.filter((player) => player.connected).map((player) => player.id);
+    network.discardPile = [];
     network.deck = createDeck();
     network.hands = {};
-    for (const id of game.activePlayerIds) network.hands[id] = Array.from({ length: 6 }, drawCard);
+    const startingHandSize = game.activePlayerIds.length === 3 ? 7 : 6;
+    for (const id of game.activePlayerIds) network.hands[id] = Array.from({ length: startingHandSize }, drawCard);
     game.round = 1;
     game.storytellerId = game.activePlayerIds[Math.floor(Math.random() * game.activePlayerIds.length)];
     game.phase = 'clue'; game.clue = ''; game.submissions = []; game.votes = []; game.voteOrder = []; game.turnPlayerId = game.storytellerId; game.result = null;
@@ -607,7 +716,7 @@ function finishRound() {
   }
   voteCounts.forEach((count, index) => {
     const ownerId = game.submissions[index].ownerId;
-    if (ownerId !== game.storytellerId) points[ownerId] += Math.min(count, 3);
+    if (ownerId !== game.storytellerId) points[ownerId] += count;
   });
   for (const player of game.players) player.score += points[player.id] || 0;
   game.result = { storyIndex, voteCounts, correctVotes, points };
@@ -617,7 +726,11 @@ function finishRound() {
 
 function beginNextRound() {
   const game = network.game;
-  for (const playerId of game.activePlayerIds) (network.hands[playerId] ||= []).push(drawCard());
+  game.submissions.forEach((submission) => network.discardPile.push(submission.card));
+  for (const playerId of game.activePlayerIds) {
+    const cardsToDraw = game.players.length === 3 && playerId !== game.storytellerId ? 2 : 1;
+    for (let i = 0; i < cardsToDraw; i += 1) (network.hands[playerId] ||= []).push(drawCard());
+  }
   const nextStoryteller = nextIdAfter(game.storytellerId, game.activePlayerIds);
   game.round += 1;
   game.storytellerId = nextStoryteller;
@@ -646,9 +759,11 @@ function fallbackCopy(input) {
 }
 
 function leaveRoom() {
+  window.clearInterval(network.heartbeatTimer);
+  network.heartbeatTimer = null;
   try { network.peer?.destroy(); } catch { /* peer may already be closed */ }
-  network.peer = null; network.connection = null; network.connections.clear(); network.peerToPlayer.clear();
-  network.isHost = false; network.playerId = null; network.game = null; network.hand = []; network.deck = []; network.hands = {};
+  network.peer = null; network.connection = null; network.connections.clear(); network.peerToPlayer.clear(); network.lastSeen.clear();
+  network.isHost = false; network.playerId = null; network.game = null; network.hand = []; network.deck = []; network.discardPile = []; network.hands = {};
   network.roomId = null; network.inviteUrl = ''; network.error = ''; network.note = ''; network.selectedCardId = null; network.selectedSubmission = null;
   const url = new URL(window.location.href); url.searchParams.delete('room'); window.history.replaceState({}, '', url.toString());
   render();
