@@ -154,6 +154,7 @@ function renderPlayerList() {
 
 function renderLobby() {
   const playerCount = network.game.players.length;
+  const connectedCount = network.game.players.filter((player) => player.connected).length;
   const isHost = network.isHost;
   app.innerHTML = `
     <div class="join-layout"><section class="setup-card lobby-card">
@@ -161,10 +162,10 @@ function renderLobby() {
       <p class="setup-intro">${isHost ? 'Wyślij link znajomym i poczekaj, aż dołączą. Zostaw tę kartę otwartą podczas gry.' : 'Czekasz na gospodarza. Gdy rozpocznie partię, gra ruszy również u Ciebie.'}</p>
       ${isHost ? `<label class="field-label" for="invite-url">Link dla graczy</label><div class="room-link-row"><input id="invite-url" class="player-input" readonly value="${escapeHtml(network.inviteUrl)}" /><button type="button" class="secondary-button copy-button" data-action="copy-link">Kopiuj link</button></div>` : ''}
       ${renderMessage()}
-      <div class="room-player-head"><span class="field-label">Gracze</span><span>${playerCount} / 6</span></div>
+      <div class="room-player-head"><span class="field-label">Gracze</span><span>${connectedCount} połączonych · ${playerCount} / 6 miejsc</span></div>
       <div class="room-player-list">${renderPlayerList()}</div>
-      <div class="lobby-actions">${isHost ? `<button type="button" class="primary-button" data-action="start-game" ${playerCount < 3 ? 'disabled' : ''}>Rozpocznij grę <span aria-hidden="true">→</span></button>` : ''}<button type="button" class="text-button" data-action="leave-room">Opuść pokój</button></div>
-      ${isHost && playerCount < 3 ? '<p class="micro-copy">Do rozpoczęcia potrzeba co najmniej 3 graczy.</p>' : ''}
+      <div class="lobby-actions">${isHost ? `<button type="button" class="primary-button" data-action="start-game" ${connectedCount < 3 ? 'disabled' : ''}>Rozpocznij grę <span aria-hidden="true">→</span></button>` : ''}<button type="button" class="text-button" data-action="leave-room">Opuść pokój</button></div>
+      ${isHost && connectedCount < 3 ? `<p class="micro-copy">Do startu potrzeba 3 połączonych graczy. Teraz jest ${connectedCount}.</p>` : ''}
       ${isHost ? '<p class="micro-copy">Gospodarz musi pozostać na stronie, aby pokój działał.</p>' : ''}
     </section></div>`;
 }
@@ -459,7 +460,11 @@ function broadcastState() {
 function startGame() {
   if (!network.isHost || network.game?.phase !== 'lobby') return;
   const active = network.game.players.filter((player) => player.connected);
-  if (active.length < 3 || active.length > 6) return;
+  if (active.length < 3 || active.length > 6) {
+    network.error = `Do startu potrzeba 3 połączonych graczy. Teraz jest ${active.length}.`;
+    render();
+    return;
+  }
   network.deck = createDeck();
   network.hands = {};
   for (const player of active) network.hands[player.id] = Array.from({ length: 6 }, drawCard);
