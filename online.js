@@ -458,26 +458,42 @@ function broadcastState() {
 }
 
 function startGame() {
-  if (!network.isHost || network.game?.phase !== 'lobby') return;
+  if (!network.isHost) {
+    network.error = 'Tylko gospodarz może rozpocząć grę. Wróć do karty, w której utworzono pokój.';
+    render();
+    return;
+  }
+  if (network.game?.phase !== 'lobby') {
+    network.error = 'Nie można rozpocząć: pokój nie jest już w poczekalni. Odśwież stronę gospodarza.';
+    render();
+    return;
+  }
   const active = network.game.players.filter((player) => player.connected);
   if (active.length < 3 || active.length > 6) {
     network.error = `Do startu potrzeba 3 połączonych graczy. Teraz jest ${active.length}.`;
     render();
     return;
   }
-  network.deck = createDeck();
-  network.hands = {};
-  for (const player of active) network.hands[player.id] = Array.from({ length: 6 }, drawCard);
-  const storyteller = active[Math.floor(Math.random() * active.length)];
-  Object.assign(network.game, {
-    phase: 'clue', round: 1, activePlayerIds: active.map((player) => player.id),
-    storytellerId: storyteller.id, clue: '', submissions: [], votes: [], voteOrder: [],
-    turnPlayerId: storyteller.id, result: null,
-  });
-  network.hand = network.hands[network.playerId] || [];
-  network.selectedCardId = null;
-  network.selectedSubmission = null;
-  broadcastState();
+  try {
+    network.error = '';
+    network.deck = createDeck();
+    network.hands = {};
+    for (const player of active) network.hands[player.id] = Array.from({ length: 6 }, drawCard);
+    const storyteller = active[Math.floor(Math.random() * active.length)];
+    Object.assign(network.game, {
+      phase: 'clue', round: 1, activePlayerIds: active.map((player) => player.id),
+      storytellerId: storyteller.id, clue: '', submissions: [], votes: [], voteOrder: [],
+      turnPlayerId: storyteller.id, result: null,
+    });
+    network.hand = network.hands[network.playerId] || [];
+    network.selectedCardId = null;
+    network.selectedSubmission = null;
+    broadcastState();
+  } catch (error) {
+    console.error('Nie udało się rozpocząć gry:', error);
+    network.error = 'Nie udało się uruchomić rundy. Odśwież stronę gospodarza i utwórz nowy pokój.';
+    render();
+  }
 }
 
 function sendAction(action, payload = {}) {
@@ -506,8 +522,12 @@ function nextIdAfter(playerId, eligibleIds) {
 function processHostAction(playerId, action, payload) {
   const game = network.game;
   if (!network.isHost || !game) return;
-  if (action === 'START' && playerId === game.hostId) {
-    startGame();
+  if (action === 'START') {
+    if (playerId === game.hostId) startGame();
+    else {
+      network.error = 'Start gry został odrzucony: komendę wysłał gracz, który nie jest gospodarzem.';
+      render();
+    }
     return;
   }
   if (action === 'PLAY_CLUE' && game.phase === 'clue' && playerId === game.storytellerId) {
